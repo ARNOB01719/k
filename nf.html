@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ULTIMATE AI DETECTION SYSTEM</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <style>
+        body {
+            margin: 0;
+            background-color: black;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        h1 {
+            font-size: 28px;
+            color: #ff4500;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+        video, canvas {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+        }
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            background: #ff4500;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            border: none;
+            font-size: 16px;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+            transition: background 0.3s;
+        }
+        button:hover { 
+            background: #ff0000; 
+        }
+    </style>
+</head>
+<body>
+
+    <h1>ULTIMATE AI DETECTION SYSTEM</h1>
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <div class="controls">
+        <button onclick="toggleAI()">PAUSE/RESUME AI</button>
+        <button onclick="changeBoxColor()">CHANGE BOX COLOR</button>
+        <button onclick="toggleAudio()">TOGGLE AUDIO</button>
+    </div>
+
+    <script>
+        let model, video, canvas, ctx;
+        let isPaused = false, isAudioOn = true;
+        let boxColor = "lime";
+        let detectedObjects = new Set();
+        let previousDetectedObjects = [];
+        let previousPositions = {}; 
+        let lastTimestamp = Date.now(); 
+
+        const referenceObjectHeightInMeters = 1.7; 
+        let pixelsPerMeter = 0; 
+
+        async function loadModel() {
+            document.querySelector("h1").textContent = "LOADING AI... PLEASE WAIT";
+            try {
+                await tf.setBackend("webgl");
+                await tf.ready();
+                model = await cocoSsd.load();
+                document.querySelector("h1").textContent = "AI SYSTEM LOADED!";
+                startCamera();
+            } catch (error) {
+                alert("Error loading the AI model. Please check your connection or try again later.");
+            }
+        }
+
+        function startCamera() {
+            video = document.getElementById("video");
+            canvas = document.getElementById("canvas");
+            ctx = canvas.getContext("2d");
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+                .then(stream => {
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        detectObjects();
+                    };
+                })
+                .catch(err => {
+                    alert("Camera access denied! Enable camera to use AI.");
+                    console.error(err);
+                });
+        }
+
+        async function detectObjects() {
+            if (isPaused) return;
+
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const predictions = await model.detect(video);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            let newObjects = [];
+            predictions.forEach(prediction => {
+                drawBox(prediction);
+                newObjects.push(`${prediction.class} (${Math.round(prediction.score * 100)}%)`);
+
+                if (prediction.class === "person" && pixelsPerMeter === 0) {
+                    calculateScale(prediction);
+                }
+
+                calculateSpeed(prediction);
+            });
+
+            let detectedText = newObjects.join(", ");
+            if (detectedText !== previousDetectedObjects.join(", ")) {
+                detectedObjects = new Set(newObjects);
+                if (isAudioOn) speak(detectedText);
+                previousDetectedObjects = newObjects;
+            }
+
+            requestAnimationFrame(detectObjects);
+        }
+
+        function drawBox(prediction) {
+            ctx.beginPath();
+            ctx.rect(...prediction.bbox);
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = boxColor;
+            ctx.stroke();
+            ctx.fillStyle = boxColor;
+            ctx.font = "18px Arial";
+            ctx.fillText(prediction.class, prediction.bbox[0], prediction.bbox[1] - 10);
+        }
+
+        function calculateScale(prediction) {
+            const personHeightInPixels = prediction.bbox[3];
+            pixelsPerMeter = personHeightInPixels / referenceObjectHeightInMeters;
+            console.log(`Scale: ${pixelsPerMeter.toFixed(2)} pixels/meter`);
+        }
+
+        function calculateSpeed(prediction) {
+            if (!pixelsPerMeter) return; 
+
+            const currentTimestamp = Date.now();
+            const deltaTime = (currentTimestamp - lastTimestamp) / 1000; 
+            lastTimestamp = currentTimestamp;
+
+            const objectId = prediction.class + prediction.bbox.toString();
+            if (!previousPositions[objectId]) {
+                previousPositions[objectId] = { bbox: prediction.bbox, lastTimestamp: currentTimestamp };
+                return;
+            }
+
+            const previousBbox = previousPositions[objectId].bbox;
+            const previousTimestamp = previousPositions[objectId].lastTimestamp;
+
+            const pixelDistance = Math.sqrt(Math.pow(prediction.bbox[0] - previousBbox[0], 2) + Math.pow(prediction.bbox[1] - previousBbox[1], 2));
+            const realWorldDistance = pixelDistance / pixelsPerMeter;
+
+            const speed = realWorldDistance / deltaTime;
+            console.log(`${prediction.class} real-world speed: ${speed.toFixed(2)} meters/second`);
+
+            previousPositions[objectId] = { bbox: prediction.bbox, lastTimestamp: currentTimestamp };
+        }
+
+        function speak(text) {
+            if (!text) return;
+            let utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.2;  // Adjust the speech rate for clarity
+            speechSynthesis.speak(utterance);
+        }
+
+        function toggleAI() {
+            isPaused = !isPaused;
+            if (!isPaused) detectObjects();
+            alert(isPaused ? "AI PAUSED" : "AI RESUMED");
+        }
+
+        function toggleAudio() {
+            isAudioOn = !isAudioOn;
+            alert(isAudioOn ? "AUDIO ENABLED" : "AUDIO DISABLED");
+        }
+
+        function changeBoxColor() {
+            boxColor = boxColor === "lime" ? "red" : "lime";
+            alert(`Bounding Box Color: ${boxColor}`);
+        }
+
+        loadModel();
+    </script>
+
+</body>
+</html>
